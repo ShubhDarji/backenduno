@@ -1,122 +1,188 @@
-import bcrypt from "bcryptjs";
-import jwt from "jsonwebtoken";
-import User from "../models/User.js";
 import Admin from "../models/Admin.js";
+import User from "../models/User.js";
 import Seller from "../models/Seller.js";
+import Order from "../models/Order.js";
+import Product from "../models/Product.js";
+import jwt from "jsonwebtoken";
+import bcrypt from "bcryptjs";
 
-// ✅ Admin Login Function
+// ✅ Admin Login
 export const adminLogin = async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    // ✅ Check if admin exists
-    const admin = await User.findOne({ email });
+    const admin = await Admin.findOne({ email });
+    if (!admin) return res.status(400).json({ message: "Invalid email or password" });
 
-    if (!admin || admin.role !== "admin") {
-      return res.status(403).json({ success: false, message: "Access Denied - Admins only" });
-    }
-
-    // ✅ Validate password
     const isMatch = await bcrypt.compare(password, admin.password);
-    if (!isMatch) {
-      return res.status(401).json({ success: false, message: "Invalid credentials" });
-    }
+    if (!isMatch) return res.status(400).json({ message: "Invalid email or password" });
 
-    // ✅ Generate JWT Token
-    const token = jwt.sign(
-      { id: admin._id, role: "admin" },
-      process.env.JWT_SECRET,
-      { expiresIn: "7d" }
-    );
+    const token = jwt.sign({ id: admin._id, role: "admin" }, process.env.JWT_SECRET, { expiresIn: "7d" });
 
-    res.json({
-      success: true,
-      message: "Admin login successful",
-      token,
-      user: {
+    res.cookie("adminToken", token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "strict",
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+    });
+
+    res.status(200).json({
+      message: "Login successful",
+      token,  // ✅ Returning token for frontend storage
+      admin: {
         id: admin._id,
-        name: admin.name,
         email: admin.email,
-        role: admin.role,
       },
     });
   } catch (error) {
     console.error("Admin login error:", error);
-    res.status(500).json({ success: false, message: "Server Error" });
+    res.status(500).json({ message: "Server error during login" });
   }
 };
 
-// ✅ Get All Users (Admin Only)
-export const getAllUsers = async (req, res) => {
+
+// ✅ Admin Logout
+export const adminLogout = (req, res) => {
   try {
-    console.log("📡 Fetching all users, sellers, and admins...");
-
-    const users = await User.find({}, "-password");
-    const sellers = await Seller.find({}, "-password");
-    const admins = await Admin.find({}, "-password");
-
-    console.log("✅ Users:", users);
-    console.log("✅ Sellers:", sellers);
-    console.log("✅ Admins:", admins);
-
-    if (!users.length && !sellers.length && !admins.length) {
-      return res.status(404).json({ success: false, message: "No users found" });
-    }
-
-    res.json({ success: true, users, sellers, admins });
+    res.clearCookie("adminToken");
+    res.status(200).json({ message: "Logout successful" });
   } catch (error) {
-    console.error("❌ Error fetching users:", error);
-    res.status(500).json({ success: false, message: "Server Error" });
+    console.error("Logout error:", error);
+    res.status(500).json({ message: "Error logging out" });
+  }
+};
+
+// ✅ Get All Users
+export const getUsers = async (req, res) => {
+  try {
+    const users = await User.find({});
+    res.json(users);
+  } catch (error) {
+    res.status(500).json({ message: "Error fetching users" });
+  }
+};
+
+// ✅ Get All Sellers
+export const getSellers = async (req, res) => {
+  try {
+    const sellers = await Seller.find().select("-password"); // ✅ Exclude passwords
+    res.status(200).json(sellers);
+  } catch (error) {
+    console.error("Error fetching sellers:", error);
+    res.status(500).json({ message: "Error fetching sellers" });
   }
 };
 
 
-// ✅ Approve Seller
 // ✅ Approve Seller
 export const approveSeller = async (req, res) => {
   try {
-    const { id } = req.params;
-    console.log(`🔍 Searching for seller with ID: ${id}`);
-
-    const seller = await Seller.findById(id);
-
-    if (!seller) {
-      console.log("❌ Seller not found!");
-      return res.status(404).json({ success: false, message: "Seller not found" });
-    }
+    const seller = await Seller.findById(req.params.id);
+    if (!seller) return res.status(404).json({ message: "Seller not found" });
 
     seller.isApproved = true;
     await seller.save();
 
-    console.log("✅ Seller approved successfully!");
-    res.json({ success: true, message: "Seller approved successfully!" });
+    res.status(200).json({ message: "Seller approved successfully", seller });
   } catch (error) {
-    console.error("❌ Approval error:", error);
-    res.status(500).json({ success: false, message: "Server Error" });
+    console.error("Error approving seller:", error);
+    res.status(500).json({ message: "Error approving seller" });
+  }
+};
+
+
+// ✅ Reject Seller
+export const rejectSeller = async (req, res) => {
+  try {
+    const seller = await Seller.findById(req.params.id);
+    if (!seller) return res.status(404).json({ message: "Seller not found" });
+
+    await seller.deleteOne();
+    res.status(200).json({ message: "Seller rejected successfully" });
+  } catch (error) {
+    console.error("Error rejecting seller:", error);
+    res.status(500).json({ message: "Error rejecting seller" });
   }
 };
 
 
 
-// ✅ Delete Seller
-export const deleteSeller = async (req, res) => {
+// ✅ Delete User/Seller
+export const deleteUser = async (req, res) => {
   try {
-    const { id } = req.params;
-    const seller = await User.findById(id);
+    const user = await User.findById(req.params.id);
+    if (!user) return res.status(404).json({ message: "User not found" });
 
-    if (!seller) {
-      return res.status(404).json({ success: false, message: "Seller not found" });
-    }
-
-    if (seller.role !== "seller") {
-      return res.status(400).json({ success: false, message: "Only sellers can be deleted" });
-    }
-
-    await User.findByIdAndDelete(id);
-
-    res.json({ success: true, message: "Seller deleted successfully!" });
+    await user.deleteOne();
+    res.status(200).json({ message: "User deleted successfully" });
   } catch (error) {
-    console.error("Delete error:", error);
-    res.status(500).json({ success: false, message: "Server Error" });
+    console.error("Error deleting user:", error);
+    res.status(500).json({ message: "Error deleting user" });
+  }
+};
+
+
+// ✅ Get All Orders
+export const getOrders = async (req, res) => {
+  try {
+    const orders = await Order.find().populate("user seller products");
+    res.status(200).json(orders);
+  } catch (error) {
+    console.error("Error fetching orders:", error);
+    res.status(500).json({ message: "Error fetching orders" });
+  }
+};
+
+// ✅ Update Order Status
+export const updateOrderStatus = async (req, res) => {
+  try {
+    const order = await Order.findById(req.params.id);
+    if (!order) return res.status(404).json({ message: "Order not found" });
+
+    order.status = req.body.status;
+    await order.save();
+
+    res.status(200).json({ message: "Order status updated successfully", order });
+  } catch (error) {
+    console.error("Error updating order status:", error);
+    res.status(500).json({ message: "Error updating order status" });
+  }
+};
+
+
+// ✅ Get All Products
+export const getProducts = async (req, res) => {
+  try {
+    const products = await Product.find();
+    res.status(200).json(products);
+  } catch (error) {
+    console.error("Error fetching products:", error);
+    res.status(500).json({ message: "Error fetching products" });
+  }
+};
+
+
+// ✅ Approve Product
+export const approveProduct = async (req, res) => {
+  try {
+    const product = await Product.findByIdAndUpdate(req.params.id, { isApproved: true }, { new: true });
+    if (!product) return res.status(404).json({ message: "Product not found" });
+
+    res.status(200).json({ message: "Product approved successfully", product });
+  } catch (error) {
+    console.error("Error approving product:", error);
+    res.status(500).json({ message: "Error approving product" });
+  }
+};
+
+
+export const deleteProduct = async (req, res) => {
+  try {
+    const product = await Product.findByIdAndDelete(req.params.id);
+    if (!product) return res.status(404).json({ message: "Product not found" });
+
+    res.json({ message: "Product deleted successfully" });
+  } catch (error) {
+    res.status(500).json({ message: "Error deleting product" });
   }
 };

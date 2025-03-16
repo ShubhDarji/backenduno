@@ -1,0 +1,5 @@
+{
+    "zenMode.restore": false,
+    "explorer.enableUndo": false,
+    "workbench.activityBar.iconClickBehavior": "focus"
+}

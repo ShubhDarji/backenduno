@@ -5,7 +5,7 @@ import fs from "fs";
 
 const router = express.Router();
 
-// Ensure the "uploads" directory exists
+// Ensure "uploads" folder exists
 const uploadDir = "./uploads";
 if (!fs.existsSync(uploadDir)) {
     fs.mkdirSync(uploadDir);
@@ -13,7 +13,9 @@ if (!fs.existsSync(uploadDir)) {
 
 // Configure Multer storage
 const storage = multer.diskStorage({
-  destination: uploadDir,
+  destination: (req, file, cb) => {
+    cb(null, uploadDir);
+  },
   filename: (req, file, cb) => {
     cb(null, Date.now() + path.extname(file.originalname)); // Unique filename
   },
@@ -21,13 +23,12 @@ const storage = multer.diskStorage({
 
 const upload = multer({ storage });
 
-// Upload route
-router.post("/upload", upload.array("images", 5), (req, res) => {
-  if (!req.files || req.files.length === 0) {
-    return res.status(400).json({ message: "No files uploaded" });
+// ✅ Upload Route
+router.post("/", upload.single("image"), (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ message: "No file uploaded" });
   }
-
-  res.json({ filePaths: req.files.map((file) => `/uploads/${file.filename}`) });
+  res.json({ filePath: `/uploads/${req.file.filename}` });
 });
 
 export default router;

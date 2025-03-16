@@ -1,16 +1,40 @@
 import express from "express";
-import { adminLogin, getAllUsers, approveSeller, deleteSeller } from "../controllers/adminController.js";
 import { protectAdmin } from "../middleware/authMiddleware.js";
+import {
+  adminLogin,
+  adminLogout,
+  getUsers,
+  getSellers,
+  approveSeller,
+  rejectSeller,
+  deleteUser,
+  getOrders,
+  updateOrderStatus,
+  getProducts,
+  approveProduct,
+  deleteProduct,
+} from "../controllers/adminController.js";
 
 const router = express.Router();
 
-// ✅ Admin login route
+// ✅ Admin Authentication
 router.post("/login", adminLogin);
+router.post("/logout", protectAdmin, adminLogout);
 
-// ✅ Protected admin routes
-router.get("/users", protectAdmin, getAllUsers);
-router.put("/approve-seller/:id", protectAdmin, approveSeller);
-router.delete("/delete-seller/:id", protectAdmin, deleteSeller);
+// ✅ User & Seller Management
+router.get("/users", protectAdmin, getUsers);
+router.get("/sellers", protectAdmin, getSellers);
+router.put("/seller/approve/:id", protectAdmin, approveSeller);
+router.put("/seller/reject/:id", protectAdmin, rejectSeller);
+router.delete("/user/:id", protectAdmin, deleteUser);
 
+// ✅ Order Management
+router.get("/orders", protectAdmin, getOrders);
+router.put("/order/:id", protectAdmin, updateOrderStatus);
+
+// ✅ Product Management
+router.get("/products", protectAdmin, getProducts);
+router.put("/product/approve/:id", protectAdmin, approveProduct);
+router.delete("/product/:id", protectAdmin, deleteProduct);
 
 export default router;

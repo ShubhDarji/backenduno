@@ -5,25 +5,16 @@ const userSchema = new mongoose.Schema(
     name: { type: String, required: true },
     email: { type: String, required: true, unique: true },
     password: { type: String, required: true },
-    phone: { type: String, default: "" },
-    profilePicture: { type: String, default: "" },
-    dob: { type: String, default: "" },
-    gender: {
-      type: String,
-      enum: ["male", "female", "other"], // Keep lowercase values
-      required: true,
-      set: (value) => value.toLowerCase(), // Convert input to lowercase
+    phone: { type: String, required: true },
+    profilePic: { type: String, default: "/uploads/default-user.png" }, // ✅ Profile Picture
+    address: {
+      street: String,
+      city: String,
+      state: String,
+      zip: String,
+      country: String,
     },
-    address: { type: String, default: "" },
-    role: {
-      type: String,
-      enum: ["admin", "seller", "customer"],
-      default: "customer", // ✅ New field: Default is "customer"
-    },
-    businessName: { type: String },
-    gstNumber: { type: String },
-    proof: { type: String }, // File path for business proof
-    isApproved: { type: Boolean, default: false }, // Admin Approval
+    role: { type: String, default: "customer" }, // customer by default
   },
   { timestamps: true }
 );
