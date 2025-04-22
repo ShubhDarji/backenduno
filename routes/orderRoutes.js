@@ -1,36 +1,27 @@
 import express from "express";
-import { protect, protectSeller, protectAdmin } from "../middleware/authMiddleware.js";
 import {
   createOrder,
-  getMyOrders,
-  getSellerOrders,
+  getUserOrders,
   getAllOrders,
-  getOrderById,
   updateOrderStatus,
   cancelOrder,
+  getSellerOrders, // ✅ New Controller
 } from "../controllers/orderController.js";
+
+import { protect, protectAdmin, protectSeller, verifySellerId } from "../middleware/authMiddleware.js";
 
 const router = express.Router();
 
-// ✅ Place Order
-router.post("/create", protect, createOrder);
+// ✅ User Routes
+router.post("/", protect, createOrder); // Create Order
+router.get("/user", protect, getUserOrders); // Get User Orders
+router.put("/:orderId/cancel", protect, cancelOrder); // Cancel Order
 
-// ✅ Get Customer Orders
-router.get("/my-orders", protect, getMyOrders);
+// ✅ Admin Routes
+router.get("/admin", protectAdmin, getAllOrders); // Get All Orders (Admin)
+router.put("/:orderId/status", protectAdmin, updateOrderStatus); // Update Order Status
 
-// ✅ Get Seller Orders
-router.get("/seller-orders", protectSeller, getSellerOrders);
-
-// ✅ Get All Orders (Admin)
-router.get("/all", protectAdmin, getAllOrders);
-
-// ✅ Get Order by ID
-router.get("/:id", protect, getOrderById);
-
-// ✅ Update Order Status (Seller)
-router.put("/update/:id", protectSeller, updateOrderStatus);
-
-// ✅ Cancel Order (Customer)
-router.put("/cancel/:id", protect, cancelOrder);
+// ✅ Seller Routes
+router.get("/seller", protectSeller, getSellerOrders); // ✅ Get Orders for the Logged-in Seller
 
 export default router;

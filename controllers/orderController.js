@@ -1,122 +1,301 @@
 import Order from "../models/Order.js";
 import Product from "../models/Product.js";
-
-// ✅ Place an Order
+import User from "../models/User.js";
+import Seller from "../models/Seller.js";
+import sendEmail from "../utils/sendEmail.js";
+import sendLowStockEmail from "../utils/sendLowStockEmail.js";
+import asyncHandler from "express-async-handler";
 export const createOrder = async (req, res) => {
   try {
-    const { productId, quantity, paymentMethod, shippingAddress } = req.body;
+    const { userId, items, address, phoneNumber, paymentMethod } = req.body;
 
-    const product = await Product.findById(productId);
-    if (!product || product.stock < quantity) {
-      return res.status(400).json({ message: "Product not available or out of stock" });
+    // Validate User
+    const user = await User.findById(userId);
+    if (!user) return res.status(404).json({ message: "User not found." });
+
+    // Validate Payment Method
+    const validPaymentMethods = ["Cash on Delivery", "Online Payment"];
+    if (!validPaymentMethods.includes(paymentMethod)) {
+      return res.status(400).json({ message: "Invalid payment method." });
     }
 
-    const totalPrice = product.price * quantity;
+    // Validate Products & Calculate Total
+    let totalAmount = 0;
+    const updatedItems = [];
 
-    const newOrder = new Order({
-      customerId: req.user._id,
-      sellerId: product.sellerId,
-      productId,
-      quantity,
-      totalPrice,
+    for (const item of items) {
+      const product = await Product.findById(item.productId);
+      if (!product) return res.status(404).json({ message: `Product not found: ${item.productId}` });
+      if (product.stock < item.qty) {
+        return res.status(400).json({ message: `Insufficient stock for ${product.productName}.` });
+      }
+
+      totalAmount += product.price * item.qty;
+
+      updatedItems.push({
+        productId: product._id,
+        sellerId: product.sellerId,
+        productName: product.productName,
+        price: product.price,
+        qty: item.qty,
+        image: product.primaryImage || "",
+        status: "Pending",
+      });
+    }
+
+    // Create Order
+    const newOrder = await Order.create({
+      userId,
+      items: updatedItems,
+      totalAmount,
+      address,
+      phoneNumber,
       paymentMethod,
-      shippingAddress,
+      status: "Pending",
+      paymentStatus: "Pending",
     });
 
-    await newOrder.save();
+    // Reduce Stock and Send Low Stock Email if needed
+    await Promise.all(
+      items.map(async (item) => {
+        const product = await Product.findById(item.productId);
+        const updatedStock = product.stock - item.qty;
 
-    // ✅ Reduce product stock
-    product.stock -= quantity;
-    await product.save();
+        product.stock = updatedStock;
+        if (updatedStock === 0) product.status = "Inactive";
+        await product.save();
 
-    res.status(201).json({ message: "Order placed successfully!", order: newOrder });
+        if ([3, 1, 0].includes(updatedStock)) {
+          const seller = await Seller.findById(product.sellerId);
+          if (seller?.email) {
+            await sendLowStockEmail(seller.email, product, updatedStock);
+          }
+        }
+      })
+    );
+
+    // Email to Buyer
+    const userHtml = `
+      <div style="font-family: 'Segoe UI', sans-serif; padding: 20px;">
+        <h2 style="color: #2a7ae4;">Order Confirmation - Etek</h2>
+        <p>Hi ${user.name},</p>
+        <p>Thank you for your order. Here are your order details:</p>
+        <ul>
+          ${updatedItems.map(item => `
+            <li><strong>${item.productName}</strong> - Qty: ${item.qty} - ₹${item.price * item.qty}</li>
+          `).join("")}
+        </ul>
+        <p><strong>Total:</strong> ₹${totalAmount}</p>
+        <p><strong>Address:</strong> ${address}</p>
+        <p><strong>Payment Method:</strong> ${paymentMethod}</p>
+        <br />
+        <p>We'll notify you when your order ships.</p>
+      </div>
+    `;
+
+    await sendEmail({
+      to: user.email,
+      subject: "Order Placed Successfully",
+      html: userHtml,
+    });
+
+    // Email to Sellers
+    const sellerGrouped = {};
+    updatedItems.forEach(item => {
+      if (!sellerGrouped[item.sellerId]) sellerGrouped[item.sellerId] = [];
+      sellerGrouped[item.sellerId].push(item);
+    });
+
+    for (const [sellerId, sellerItems] of Object.entries(sellerGrouped)) {
+      const seller = await Seller.findById(sellerId);
+      if (!seller?.email) continue;
+
+      const sellerHtml = `
+        <div style="font-family: 'Segoe UI', sans-serif; padding: 20px;">
+          <h2 style="color: #2a7ae4;">New Order Received - Etek</h2>
+          <p>Hi ${seller.name || "Seller"},</p>
+          <p>You have received a new order with the following items:</p>
+          <ul>
+            ${sellerItems.map(item => `
+              <li><strong>${item.productName}</strong> - Qty: ${item.qty}</li>
+            `).join("")}
+          </ul>
+          <p><strong>Customer:</strong> ${user.name} (${user.email})</p>
+          <p>Please process it soon from your dashboard.</p>
+        </div>
+      `;
+
+      await sendEmail({
+        to: seller.email,
+        subject: "New Order Received",
+        html: sellerHtml,
+      });
+    }
+
+    res.status(201).json({
+      message: "Order created successfully",
+      order: newOrder,
+    });
   } catch (error) {
-    res.status(500).json({ message: "Error placing order" });
+    console.error("Order Error:", error);
+    res.status(500).json({ message: "Failed to create order", error: error.message });
   }
 };
 
-// ✅ Get Orders for a Customer
-export const getMyOrders = async (req, res) => {
+// ✅ Get Orders for User
+export const getUserOrders = async (req, res) => {
   try {
-    const orders = await Order.find({ customerId: req.user._id }).populate("productId");
-    res.json(orders);
+    const orders = await Order.find({ userId: req.user._id })
+      .populate('items.productId', 'productName image price')
+      .populate('items.sellerId', 'name email businessName profileImage')// ✅ Add this line
+      .sort({ createdAt: -1 });
+
+    if (!orders.length) return res.status(404).json({ message: 'No orders found.' });
+
+    res.status(200).json(orders);
   } catch (error) {
-    res.status(500).json({ message: "Error fetching orders" });
+    res.status(500).json({ message: 'Failed to fetch orders.', error: error.message });
   }
 };
 
-// ✅ Get Orders for a Seller
+// ✅ Get Orders for Seller
 export const getSellerOrders = async (req, res) => {
   try {
-    const orders = await Order.find({ sellerId: req.seller._id }).populate("productId");
-    res.json(orders);
+    const sellerId = req.seller._id; // Get seller ID from authentication middleware
+
+    // Find orders where any item's sellerId matches the logged-in seller
+    const orders = await Order.find({ "items.sellerId": sellerId })
+      .populate("userId", "name email") // Populate user details
+      .populate("items.productId", "productName image price") // Populate product details
+      .sort({ createdAt: -1 });
+
+    if (!orders.length) {
+      return res.status(404).json({ message: "No orders found for this seller." });
+    }
+
+    res.status(200).json(orders);
   } catch (error) {
-    res.status(500).json({ message: "Error fetching seller orders" });
+    console.error("Error fetching seller orders:", error);
+    res.status(500).json({ message: "Failed to fetch seller orders.", error: error.message });
   }
 };
 
-// ✅ Get All Orders (Admin)
+// ✅ Get All Orders for Admin
 export const getAllOrders = async (req, res) => {
   try {
-    const orders = await Order.find().populate("productId sellerId customerId");
-    res.json(orders);
+    const orders = await Order.find()
+      .populate('userId', 'name email')
+      .populate('items.productId', 'productName image')
+      .populate('items.sellerId', 'name email businessName profileImage') // ✅ Add this line
+      .sort({ createdAt: -1 });
+
+    res.status(200).json(orders);
   } catch (error) {
-    res.status(500).json({ message: "Error fetching all orders" });
+    res.status(500).json({ message: 'Failed to fetch orders', error: error.message });
   }
 };
+// ✅ Update Order Status
 
-// ✅ Get a Single Order by ID
-export const getOrderById = async (req, res) => {
-  try {
-    const order = await Order.findById(req.params.id).populate("productId sellerId customerId");
-    if (!order) return res.status(404).json({ message: "Order not found" });
 
-    res.json(order);
-  } catch (error) {
-    res.status(500).json({ message: "Error fetching order" });
-  }
-};
 
-// ✅ Update Order Status (Seller Only)
+import { generateInvoice } from "../utils/generateInvoice.js"; // make sure this exists
+
+import path from "path";
+import fs from "fs";
+
 export const updateOrderStatus = async (req, res) => {
   try {
-    const order = await Order.findById(req.params.id);
+    const { orderId } = req.params;
+    const { status, paymentStatus } = req.body;
 
+    const validStatuses = ["Pending", "Processing", "Shipped", "Delivered", "Cancelled"];
+    const validPaymentStatuses = ["Pending", "Completed", "Failed"];
+
+    if (status && !validStatuses.includes(status))
+      return res.status(400).json({ message: "Invalid order status" });
+
+    if (paymentStatus && !validPaymentStatuses.includes(paymentStatus))
+      return res.status(400).json({ message: "Invalid payment status" });
+
+    const order = await Order.findById(orderId).populate("userId");
     if (!order) return res.status(404).json({ message: "Order not found" });
 
-    if (order.sellerId.toString() !== req.seller._id.toString()) {
-      return res.status(403).json({ message: "Unauthorized: You can only update your own orders" });
+    // Apply updates
+    if (status) {
+      order.items = order.items.map(item => ({
+        ...item.toObject(),
+        status,
+      }));
+    }
+    if (paymentStatus) order.paymentStatus = paymentStatus;
+
+    await order.save(); // ✅ pre-save hook will recalculate overallStatus
+
+    // ✅ Trigger invoice email if overallStatus becomes "Shipped"
+    if (order.overallStatus === "Shipped") {
+      const invoiceDir = path.resolve("invoices");
+      if (!fs.existsSync(invoiceDir)) fs.mkdirSync(invoiceDir);
+
+      const invoicePath = path.join(invoiceDir, `invoice-${order._id}.pdf`);
+      await generateInvoice(order, order.userId, invoicePath);
+
+      const html = `
+        <div style="font-family: Arial; padding: 20px;">
+          <h2>Your Order is Shipped - Invoice Attached</h2>
+          <p>Hi ${order.userId.name},</p>
+          <p>Your order #<strong>${order._id}</strong> has been shipped. We've attached your invoice for reference.</p>
+          <p>Thank you for shopping with Etek!</p>
+        </div>
+      `;
+
+      await sendEmail({
+        to: order.userId.email,
+        subject: "Order Shipped - Invoice Attached",
+        html,
+        attachments: [
+          {
+            filename: `invoice-${order._id}.pdf`,
+            path: invoicePath,
+          }
+        ]
+      });
     }
 
-    order.orderStatus = req.body.orderStatus || order.orderStatus;
-    await order.save();
-
-    res.json({ message: "Order status updated", order });
+    res.status(200).json({ message: "Order updated", order });
   } catch (error) {
-    res.status(500).json({ message: "Error updating order status" });
+    console.error("updateOrderStatus error:", error);
+    res.status(500).json({ message: "Failed to update order", error: error.message });
   }
 };
 
-// ✅ Cancel Order (Customer Only)
-export const cancelOrder = async (req, res) => {
-  try {
-    const order = await Order.findById(req.params.id);
+// ✅ Cancel Order (By User)
+// cancelOrderController.js or inside orderController.js
 
-    if (!order) return res.status(404).json({ message: "Order not found" });
+export const cancelOrder = asyncHandler(async (req, res) => {
+  const { orderId } = req.params;
 
-    if (order.customerId.toString() !== req.user._id.toString()) {
-      return res.status(403).json({ message: "Unauthorized: You can only cancel your own orders" });
-    }
+  const order = await Order.findById(orderId);
 
-    if (order.orderStatus !== "Pending") {
-      return res.status(400).json({ message: "Only pending orders can be canceled" });
-    }
-
-    order.orderStatus = "Cancelled";
-    await order.save();
-
-    res.json({ message: "Order canceled successfully", order });
-  } catch (error) {
-    res.status(500).json({ message: "Error canceling order" });
+  if (!order) {
+    return res.status(404).json({ message: "Order not found" });
   }
-};
+
+  // Check if all items are still pending
+  const allPending = order.items.every(item => item.status === "Pending");
+  if (!allPending) {
+    return res.status(400).json({ message: "Only orders with all items pending can be cancelled" });
+  }
+
+  // Cancel all items
+  order.items = order.items.map(item => ({
+    ...item.toObject(), // to preserve other item fields
+    status: "Cancelled",
+  }));
+
+  const updatedOrder = await order.save();
+
+  res.json({
+    message: "Order cancelled successfully.",
+    order: updatedOrder,
+  });
+});

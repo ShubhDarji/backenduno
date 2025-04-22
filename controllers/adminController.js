@@ -6,6 +6,58 @@ import Product from "../models/Product.js";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
 
+
+
+// Admin Signup with Improved Error Handling
+export const adminSignup = async (req, res) => {
+  try {
+    const { name, email, password } = req.body;
+
+    if (!name || !email || !password) {
+      return res.status(400).json({ message: "All fields are required" });
+    }
+
+    // Validate Email Format using Regex
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({ message: "Invalid email format" });
+    }
+
+    // Check if Email Already Exists
+    const existingAdmin = await Admin.findOne({ email });
+    if (existingAdmin) {
+      return res.status(400).json({ message: "Admin with this email already exists" });
+    }
+
+    // Password Validation (At least 6 characters)
+    if (password.length < 6) {
+      return res.status(400).json({ message: "Password must be at least 6 characters" });
+    }
+
+    const newAdmin = new Admin({ name, email, password });
+    await newAdmin.save();
+
+    const token = jwt.sign(
+      { id: newAdmin._id, role: "admin" },
+      process.env.JWT_SECRET,
+      { expiresIn: "7d" }
+    );
+
+    res.status(201).json({
+      message: "Admin registered successfully",
+      token,
+      admin: {
+        id: newAdmin._id,
+        name: newAdmin.name,
+        email: newAdmin.email,
+      },
+    });
+  } catch (error) {
+    console.error("Admin Signup Error:", error);
+    res.status(500).json({ message: error.message || "Server error during admin signup" });
+  }
+};
+
 // ✅ Admin Login
 export const adminLogin = async (req, res) => {
   try {

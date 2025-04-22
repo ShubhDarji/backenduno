@@ -1,6 +1,7 @@
 import express from "express";
 import { protectAdmin } from "../middleware/authMiddleware.js";
 import {
+  adminSignup,
   adminLogin,
   adminLogout,
   getUsers,
@@ -18,6 +19,7 @@ import {
 const router = express.Router();
 
 // ✅ Admin Authentication
+router.post("/signup", adminSignup);
 router.post("/login", adminLogin);
 router.post("/logout", protectAdmin, adminLogout);
 
