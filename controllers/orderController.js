@@ -9,25 +9,30 @@ export const createOrder = async (req, res) => {
   try {
     const { userId, items, address, phoneNumber, paymentMethod } = req.body;
 
-    // Validate User
+    // 1. Validate User
     const user = await User.findById(userId);
     if (!user) return res.status(404).json({ message: "User not found." });
 
-    // Validate Payment Method
+    // 2. Validate Payment Method
     const validPaymentMethods = ["Cash on Delivery", "Online Payment"];
     if (!validPaymentMethods.includes(paymentMethod)) {
       return res.status(400).json({ message: "Invalid payment method." });
     }
 
-    // Validate Products & Calculate Total
+    // 3. Validate Products and Calculate Total
     let totalAmount = 0;
     const updatedItems = [];
 
     for (const item of items) {
       const product = await Product.findById(item.productId);
-      if (!product) return res.status(404).json({ message: `Product not found: ${item.productId}` });
+      if (!product) {
+        return res.status(404).json({ message: `Product not found: ${item.productId}` });
+      }
+
       if (product.stock < item.qty) {
-        return res.status(400).json({ message: `Insufficient stock for ${product.productName}.` });
+        return res.status(400).json({
+          message: `Insufficient stock for ${product.productName}. Available: ${product.stock}`,
+        });
       }
 
       totalAmount += product.price * item.qty;
@@ -43,7 +48,16 @@ export const createOrder = async (req, res) => {
       });
     }
 
-    // Create Order
+    // 4. Create Order
+    console.log("🧾 Creating order with:", {
+      userId,
+      totalAmount,
+      address,
+      items: updatedItems,
+      phoneNumber,
+      paymentMethod,
+    });
+
     const newOrder = await Order.create({
       userId,
       items: updatedItems,
@@ -55,35 +69,48 @@ export const createOrder = async (req, res) => {
       paymentStatus: "Pending",
     });
 
-    // Reduce Stock and Send Low Stock Email if needed
+    // 5. Update Product Stock + Notify Seller if Low
     await Promise.all(
       items.map(async (item) => {
-        const product = await Product.findById(item.productId);
-        const updatedStock = product.stock - item.qty;
+        try {
+          const product = await Product.findById(item.productId);
+          const updatedStock = product.stock - item.qty;
+          product.stock = updatedStock;
 
-        product.stock = updatedStock;
-        if (updatedStock === 0) product.status = "Inactive";
-        await product.save();
+          if (updatedStock === 0) product.status = "Inactive";
 
-        if ([3, 1, 0].includes(updatedStock)) {
-          const seller = await Seller.findById(product.sellerId);
-          if (seller?.email) {
-            await sendLowStockEmail(seller.email, product, updatedStock);
+          await product.save();
+
+          // Notify if stock is low
+          try {
+            if ([3, 1, 0].includes(updatedStock)) {
+              const seller = await Seller.findById(product.sellerId);
+              if (seller?.email) {
+                await sendLowStockEmail(seller.email, product, updatedStock);
+              }
+            }
+          } catch (emailErr) {
+            console.error(`❌ Failed to send low stock email:`, emailErr.message);
           }
+        } catch (err) {
+          console.error(`❌ Stock update error for ${item.productId}:`, err.message);
         }
       })
     );
 
-    // Email to Buyer
+    // 6. Email to User
     const userHtml = `
       <div style="font-family: 'Segoe UI', sans-serif; padding: 20px;">
         <h2 style="color: #2a7ae4;">Order Confirmation - Etek</h2>
         <p>Hi ${user.name},</p>
         <p>Thank you for your order. Here are your order details:</p>
         <ul>
-          ${updatedItems.map(item => `
-            <li><strong>${item.productName}</strong> - Qty: ${item.qty} - ₹${item.price * item.qty}</li>
-          `).join("")}
+          ${updatedItems
+            .map(
+              (item) =>
+                `<li><strong>${item.productName}</strong> - Qty: ${item.qty} - ₹${item.price * item.qty}</li>`
+            )
+            .join("")}
         </ul>
         <p><strong>Total:</strong> ₹${totalAmount}</p>
         <p><strong>Address:</strong> ${address}</p>
@@ -93,16 +120,22 @@ export const createOrder = async (req, res) => {
       </div>
     `;
 
-    await sendEmail({
-      to: user.email,
-      subject: "Order Placed Successfully",
-      html: userHtml,
-    });
+    try {
+      await sendEmail({
+        to: user.email,
+        subject: "Order Placed Successfully",
+        html: userHtml,
+      });
+    } catch (err) {
+      console.error("❌ Email to user failed:", err.message);
+    }
 
-    // Email to Sellers
+    // 7. Email to Sellers
     const sellerGrouped = {};
-    updatedItems.forEach(item => {
-      if (!sellerGrouped[item.sellerId]) sellerGrouped[item.sellerId] = [];
+    updatedItems.forEach((item) => {
+      if (!sellerGrouped[item.sellerId]) {
+        sellerGrouped[item.sellerId] = [];
+      }
       sellerGrouped[item.sellerId].push(item);
     });
 
@@ -116,28 +149,32 @@ export const createOrder = async (req, res) => {
           <p>Hi ${seller.name || "Seller"},</p>
           <p>You have received a new order with the following items:</p>
           <ul>
-            ${sellerItems.map(item => `
-              <li><strong>${item.productName}</strong> - Qty: ${item.qty}</li>
-            `).join("")}
+            ${sellerItems.map(item => `<li><strong>${item.productName}</strong> - Qty: ${item.qty}</li>`).join("")}
           </ul>
           <p><strong>Customer:</strong> ${user.name} (${user.email})</p>
           <p>Please process it soon from your dashboard.</p>
         </div>
       `;
 
-      await sendEmail({
-        to: seller.email,
-        subject: "New Order Received",
-        html: sellerHtml,
-      });
+      try {
+        await sendEmail({
+          to: seller.email,
+          subject: "New Order Received",
+          html: sellerHtml,
+        });
+      } catch (err) {
+        console.error(`❌ Email to seller ${sellerId} failed:`, err.message);
+      }
     }
 
+    // 8. Final Response
     res.status(201).json({
       message: "Order created successfully",
       order: newOrder,
     });
+
   } catch (error) {
-    console.error("Order Error:", error);
+    console.error("❌ Order Error:", error);
     res.status(500).json({ message: "Failed to create order", error: error.message });
   }
 };

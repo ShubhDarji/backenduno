@@ -10,7 +10,7 @@ import {
   updateProductStatus ,
 } from "../controllers/productController.js";
 import upload from "../config/multerConfig.js";
-import { protectSeller ,verifySellerToken,verifySellerId } from "../middleware/authMiddleware.js";
+import { protectSeller ,verifySellerToken,verifySellerId ,protectAdmin} from "../middleware/authMiddleware.js";
 import { getHomeProducts } from "../controllers/productController.js";
 
 const router = express.Router();
@@ -29,6 +29,7 @@ router.put("/update/:id", verifySellerToken, upload.fields([
 ]), updateProduct);
 
 router.put('/status/:id', verifySellerToken, updateProductStatus);
+router.put('/admin/status/:id', protectAdmin, updateProductStatus);
 
 router.get("/", getProducts);
 router.get("/seller", verifySellerId, getProductsBySeller);
